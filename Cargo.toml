@@ -1,0 +1,38 @@
+[package]
+name = "cattern_aide"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "cattern_aide"
+path = "src/main.rs"
+
+[dependencies]
+ratatui            = { version = "0.27", features = ["crossterm"] }
+crossterm          = { version = "0.27", features = ["event-stream"] }
+tokio              = { version = "1",    features = ["full"] }
+futures            = "0.3"
+
+# Agent / HTTP (declared now; stubs in phase 1)
+reqwest            = { version = "0.12", features = ["json", "stream"] }
+axum               = "0.7"
+
+# Config / serialization
+serde              = { version = "1",    features = ["derive"] }
+serde_json         = "1"
+toml               = "0.8"
+
+# Error handling
+anyhow             = "1"
+thiserror          = "1"
+
+# Logging — file only, never stdout
+tracing            = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-appender   = "0.2"
+
+# Sidebar image rendering — uncomment in phase 2
+# ratatui-image  = { version = "2", features = ["crossterm"] }
+# image          = "0.25"
+# ab_glyph       = "0.2"
+# imageproc      = "0.24"

@@ -1,0 +1,10 @@
+/home/ktaylor/Projects/cattern_aide/target/debug/deps/tracing_appender-30f787463bc4833f.d: /home/ktaylor/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tracing-appender-0.2.4/src/lib.rs /home/ktaylor/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tracing-appender-0.2.4/src/non_blocking.rs /home/ktaylor/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tracing-appender-0.2.4/src/rolling.rs /home/ktaylor/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tracing-appender-0.2.4/src/rolling/builder.rs /home/ktaylor/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tracing-appender-0.2.4/src/worker.rs /home/ktaylor/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tracing-appender-0.2.4/src/sync.rs
+
+/home/ktaylor/Projects/cattern_aide/target/debug/deps/libtracing_appender-30f787463bc4833f.rmeta: /home/ktaylor/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tracing-appender-0.2.4/src/lib.rs /home/ktaylor/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tracing-appender-0.2.4/src/non_blocking.rs /home/ktaylor/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tracing-appender-0.2.4/src/rolling.rs /home/ktaylor/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tracing-appender-0.2.4/src/rolling/builder.rs /home/ktaylor/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tracing-appender-0.2.4/src/worker.rs /home/ktaylor/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tracing-appender-0.2.4/src/sync.rs
+
+/home/ktaylor/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tracing-appender-0.2.4/src/lib.rs:
+/home/ktaylor/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tracing-appender-0.2.4/src/non_blocking.rs:
+/home/ktaylor/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tracing-appender-0.2.4/src/rolling.rs:
+/home/ktaylor/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tracing-appender-0.2.4/src/rolling/builder.rs:
+/home/ktaylor/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tracing-appender-0.2.4/src/worker.rs:
+/home/ktaylor/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tracing-appender-0.2.4/src/sync.rs:

@@ -1,0 +1,23 @@
+[general]
+tick_ms = 50
+
+[provider.anthropic]
+api_key = "sk-ant-..."
+model   = "claude-opus-4-5"
+mode    = "api"    # "api" | "subprocess"
+
+[provider.opencode]
+api_base = "http://localhost:4096/v1"
+api_key  = ""
+model    = "anthropic/claude-sonnet-4-5"
+mode     = "api"
+
+[[project]]
+name     = "my-project"
+provider = "anthropic"
+path     = "/home/user/my-project"
+
+[[project]]
+name     = "other"
+provider = "opencode"
+path     = "/home/user/other"
