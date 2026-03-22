@@ -59,6 +59,13 @@ pub enum AgentKind  {
     Process(String),
     HttpProxy { port: u16, target: String },  // e.g. port 8081 → localhost:8080
 }
+
+// Provider is resolved at spawn time from the project's config,
+// not stored in AgentKind — keeps tab state provider-agnostic.
+pub enum Provider {
+    Anthropic,   // API: api.anthropic.com  |  subprocess: claude -p
+    OpenCode,    // API: OpenAI-compat endpoint  |  subprocess: opencode run
+}
 </pre>
 
 ### TextContainer (`src/state/container.rs`)
@@ -83,6 +90,64 @@ pub enum AgentMessage {
 </pre>
 
 Routing key is `(project_name, tab_kind)`. `drain_into(&mut projects)` called on every tick via `try_recv` (non-blocking).
+
+---
+
+## OpenCode Support
+
+### Provider model
+
+Each project in `config.toml` declares a `provider` field:
+
+```toml
+[[project]]
+name = "my-project"
+provider = "opencode"   # or "anthropic" (default)
+```
+
+`AgentManager::spawn_ai_prompt` reads the project's provider and dispatches to the appropriate agent implementation. `AgentKind` and `AgentMessage` are unchanged — tabs remain provider-agnostic.
+
+### Subprocess agent (generic, `src/agent/subprocess_agent.rs`)
+
+The subprocess agent is parameterised by command rather than hardcoding `claude`:
+
+| Provider | Command |
+|---|---|
+| Anthropic | `claude -p <prompt>` |
+| OpenCode | `opencode run --print <prompt>` |
+
+The caller passes `(command, args)` — the agent impl is identical for both.
+
+### OpenAI-compatible API agent (`src/agent/openai_api_agent.rs`)
+
+OpenCode exposes an OpenAI-compatible `/v1/chat/completions` endpoint. This agent mirrors `api_agent.rs` but parses the OpenAI SSE schema:
+
+- Event field: `choices[0].delta.content` (vs Anthropic's `content_block_delta.delta.text`)
+- Stop signal: `choices[0].finish_reason == "stop"` (vs `message_stop` event type)
+- Auth header: `Authorization: Bearer <token>` (vs `x-api-key`)
+
+Config additions needed in `src/config.rs`:
+
+```toml
+[provider.opencode]
+api_base = "http://localhost:4096/v1"   # opencode's local server port
+api_key  = ""                            # optional; opencode manages auth itself
+model    = "anthropic/claude-sonnet-4-5" # passed through to the underlying provider
+```
+
+### File structure addition
+
+```
+src/agent/
+    openai_api_agent.rs   # NEW — OpenAI-compat SSE streaming for opencode
+    subprocess_agent.rs   # UPDATED — command + args params instead of hardcoded "claude"
+```
+
+### Build order update
+
+Insert between steps 8 and 9:
+- 8a. `src/agent/openai_api_agent.rs` — OpenAI-compat streaming
+- 8b. Update `subprocess_agent.rs` to accept generic `(command, args)`
 
 ---
 
@@ -160,7 +225,15 @@ axum = "0.7"
 
 Routing key and `AgentMessage` variants are unchanged — proxy events are just `Chunk` messages like any other tab.
 
-### Claude API Agent (`src/agent/api_agent.rs`)
+### OpenAI-compatible API Agent (`src/agent/openai_api_agent.rs`)
+1. Send `StateChange(Running)`
+2. POST to `{api_base}/chat/completions` with `"stream": true` and `Authorization: Bearer {api_key}`
+3. Buffer raw bytes; process complete SSE events delimited by `"\n\n"`; skip `[DONE]` sentinel
+4. Parse `choices[0].delta.content`; split on `\n`; send `Chunk` messages with `is_newline` flag
+5. Stop on `choices[0].finish_reason == "stop"` or SSE stream end
+6. Send `StateChange(Idle)` or `StateChange(Error)` on completion
+
+### Anthropic API Agent (`src/agent/api_agent.rs`)
 1. Send `StateChange(Running)`
 2. POST to `https://api.anthropic.com/v1/messages` with `"stream": true`
 3. Buffer raw bytes; process complete SSE events delimited by `"\n\n"`
@@ -168,11 +241,12 @@ Routing key and `AgentMessage` variants are unchanged — proxy events are just 
 5. Send `StateChange(Idle)` or `StateChange(Error)` on completion
 
 ### Subprocess Agent (`src/agent/subprocess_agent.rs`)
-1. `tokio::process::Command::new("claude").args(["-p", prompt])`
-2. `stdout(Stdio::piped())` + `stderr(Stdio::piped())`
-3. `tokio::select!` loop over `BufReader::lines()` on both streams
-4. Each line → `Chunk { is_newline: true }`; stderr lines prefixed with `[stderr]`
-5. If line-buffering issues arise, wrap with `stdbuf -oL claude -p ...`
+1. Accept `(command: &str, args: &[&str])` — caller passes `["claude", "-p", prompt]` or `["opencode", "run", "--print", prompt]`
+2. `tokio::process::Command::new(command).args(args)`
+3. `stdout(Stdio::piped())` + `stderr(Stdio::piped())`
+4. `tokio::select!` loop over `BufReader::lines()` on both streams
+5. Each line → `Chunk { is_newline: true }`; stderr lines prefixed with `[stderr]`
+6. If line-buffering issues arise, wrap with `stdbuf -oL <command> ...`
 
 ### Process Tab (`AgentKind::Process(String)`)
 Long-running processes (e.g. `vite dev`, `npm run watch`) use the same subprocess pipe as above, with two additions:
