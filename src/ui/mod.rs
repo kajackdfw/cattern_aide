@@ -1,3 +1,5 @@
+pub mod file_tree;
+pub mod git_panel;
 pub mod layout;
 pub mod led;
 pub mod main_area;

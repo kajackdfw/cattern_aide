@@ -10,6 +10,7 @@ pub enum AgentState {
 pub enum AgentKind {
     AiPrompt,
     TargetCode,
+    Git,
     Named(String),
     Process(String),
     HttpProxy { port: u16, target: String },

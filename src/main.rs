@@ -32,7 +32,7 @@ async fn main() -> Result<()> {
     // Config
     let cfg     = config::load("config.toml").unwrap_or_else(|_| config::default_config());
     let tick_ms = cfg.general.tick_ms;
-    let mut app = App::from_config(&cfg, "config.toml");
+    let mut app = App::from_config(cfg, "config.toml");
 
     // Terminal setup
     enable_raw_mode()?;
@@ -41,16 +41,13 @@ async fn main() -> Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    // Agent manager — no-op stub in phase 1
-    let mut agent_mgr = agent::AgentManager::new_stub();
-
     // Event loop
     let mut tick_interval = interval(Duration::from_millis(tick_ms));
     tick_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let mut events = EventStream::new();
 
     loop {
-        agent_mgr.drain_into(&mut app.projects);
+        app.drain_agents();
         terminal.draw(|f| ui::draw(f, &app))?;
 
         if app.should_quit {

@@ -6,14 +6,17 @@ use ratatui::{
     Frame,
 };
 use crate::{
-    app::{AppModal, ModalField, NewProjectForm},
+    app::{AppModal, FolderBrowserState, ModalField, NewProjectForm},
     state::agent::Provider,
 };
 
 pub fn draw_modal(frame: &mut Frame, modal: &AppModal) {
     match modal {
-        AppModal::NewProject(form) => draw_new_project(frame, form),
-        AppModal::Help             => draw_help(frame),
+        AppModal::NewProject(form)                        => draw_project_form(frame, form, " New Project "),
+        AppModal::EditProject { form, .. }                 => draw_project_form(frame, form, " Edit Project "),
+        AppModal::DeleteConfirm { name, yes_focused, .. } => draw_delete_confirm(frame, name, *yes_focused),
+        AppModal::GitCommit { message, cursor, .. }        => draw_git_commit(frame, message, *cursor),
+        AppModal::Help                                    => draw_help(frame),
     }
 }
 
@@ -52,11 +55,16 @@ fn draw_help(frame: &mut Frame) {
         Line::from(vec![key("h / ←"),          sep(), desc("Previous tab")]),
         Line::from(vec![key("PgDn / PgUp"),    sep(), desc("Scroll content")]),
         blank(),
-        head("Add Project"),
+        head("Projects"),
         Line::from(vec![key("j / ↓"),          sep(), desc("Navigate down to  ─── +")]),
-        Line::from(vec![key("Enter / Space"),  sep(), desc("Open add-project form")]),
+        Line::from(vec![key("Enter / Space"),  sep(), desc("Add project  /  focus prompt input")]),
+        Line::from(vec![key("e"),              sep(), desc("Edit selected project")]),
+        Line::from(vec![key("d / Del"),        sep(), desc("Delete selected project")]),
+        blank(),
+        head("Add / Edit Form"),
         Line::from(vec![key("Tab / ↑↓"),       sep(), desc("Move between form fields")]),
         Line::from(vec![key("← / →"),          sep(), desc("Toggle ClaudeCode / OpenCode")]),
+        Line::from(vec![key("Ctrl-F"),         sep(), desc("Browse filesystem for path")]),
         Line::from(vec![key("Esc"),            sep(), desc("Cancel form")]),
         blank(),
         head("General"),
@@ -75,16 +83,14 @@ fn draw_help(frame: &mut Frame) {
     );
 }
 
-fn draw_new_project(frame: &mut Frame, form: &NewProjectForm) {
+fn draw_project_form(frame: &mut Frame, form: &NewProjectForm, title: &str) {
     let screen = frame.size();
     let modal_rect = centered_rect(62, 14, screen);
 
-    // Clear whatever is underneath
     frame.render_widget(Clear, modal_rect);
 
-    // Outer block
     let block = Block::default()
-        .title(" New Project ")
+        .title(title)
         .title_alignment(Alignment::Center)
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
@@ -114,12 +120,17 @@ fn draw_new_project(frame: &mut Frame, form: &NewProjectForm) {
 
     render_text_field(frame, rows[0], "Name", &form.name,
         form.focused_field == ModalField::Name, form.name_cursor);
-    render_text_field(frame, rows[1], "Path", &form.path,
+    render_text_field(frame, rows[1], "Path  (Ctrl-F to browse)", &form.path,
         form.focused_field == ModalField::Path, form.path_cursor);
     render_provider_toggle(frame, rows[2], &form.provider,
         form.focused_field == ModalField::Provider);
     render_confirm_button(frame, rows[3], form.focused_field == ModalField::Confirm);
     render_hint(frame, rows[4]);
+
+    // Folder browser overlay
+    if let Some(ref browser) = form.browser {
+        draw_folder_browser(frame, browser);
+    }
 
     // Position terminal cursor inside focused text fields
     if form.focused_field == ModalField::Name {
@@ -221,10 +232,217 @@ fn render_confirm_button(frame: &mut Frame, area: Rect, focused: bool) {
 
 fn render_hint(frame: &mut Frame, area: Rect) {
     frame.render_widget(
-        Paragraph::new("Tab/↑↓ navigate   ←/→ toggle   Enter confirm   Esc cancel")
+        Paragraph::new("Tab/↑↓ navigate   ←/→ toggle   Ctrl-F browse path   Enter confirm   Esc cancel")
             .style(Style::default().fg(Color::Rgb(80, 80, 100)))
             .alignment(Alignment::Center),
         area,
+    );
+}
+
+fn draw_folder_browser(frame: &mut Frame, browser: &FolderBrowserState) {
+    let screen = frame.size();
+    let modal_rect = centered_rect(70, 22, screen);
+
+    frame.render_widget(Clear, modal_rect);
+
+    let current_path = browser.current_dir.to_string_lossy();
+    let title = format!("  {}  ", current_path);
+    let block = Block::default()
+        .title(title)
+        .title_alignment(Alignment::Left)
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .style(Style::default().bg(Color::Rgb(10, 10, 30)).fg(Color::Cyan));
+    frame.render_widget(block, modal_rect);
+
+    let inner = Rect::new(
+        modal_rect.x + 1,
+        modal_rect.y + 1,
+        modal_rect.width.saturating_sub(2),
+        modal_rect.height.saturating_sub(2),
+    );
+
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Min(1),
+            Constraint::Length(1),
+        ])
+        .split(inner);
+
+    let list_height = rows[0].height as usize;
+    let n = browser.entries.len();
+
+    if n == 0 {
+        frame.render_widget(
+            Paragraph::new("  (no subdirectories — press Space to select this directory)")
+                .style(Style::default().fg(Color::Rgb(100, 100, 120))),
+            rows[0],
+        );
+    } else {
+        let start = if browser.selected >= list_height {
+            browser.selected - list_height + 1
+        } else {
+            0
+        };
+        let end = (start + list_height).min(n);
+
+        let lines: Vec<Line> = browser.entries[start..end]
+            .iter()
+            .enumerate()
+            .map(|(i, path)| {
+                let abs_idx = start + i;
+                let name = path.file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| path.to_string_lossy().to_string());
+                let display = format!("  {}  ", name);
+                if abs_idx == browser.selected {
+                    Line::from(Span::styled(
+                        display,
+                        Style::default().fg(Color::Black).bg(Color::Cyan).add_modifier(Modifier::BOLD),
+                    ))
+                } else {
+                    Line::from(Span::styled(display, Style::default().fg(Color::White)))
+                }
+            })
+            .collect();
+
+        frame.render_widget(Paragraph::new(lines), rows[0]);
+    }
+
+    frame.render_widget(
+        Paragraph::new("↑↓ navigate   Enter enter dir   ← go up   Space select this dir   Esc cancel")
+            .style(Style::default().fg(Color::Rgb(80, 80, 100)))
+            .alignment(Alignment::Center),
+        rows[1],
+    );
+}
+
+fn draw_git_commit(frame: &mut Frame, message: &str, cursor: usize) {
+    let screen = frame.size();
+    let modal_rect = centered_rect(62, 7, screen);
+
+    frame.render_widget(Clear, modal_rect);
+
+    let block = Block::default()
+        .title(" Git Commit ")
+        .title_alignment(Alignment::Center)
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .style(Style::default().bg(Color::Rgb(10, 20, 15)).fg(Color::White));
+    frame.render_widget(block, modal_rect);
+
+    let inner = Rect::new(
+        modal_rect.x + 1,
+        modal_rect.y + 1,
+        modal_rect.width.saturating_sub(2),
+        modal_rect.height.saturating_sub(2),
+    );
+
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3), // input field
+            Constraint::Length(1), // hint
+            Constraint::Min(0),
+        ])
+        .split(inner);
+
+    render_text_field(frame, rows[0], "Message", message, true, cursor);
+
+    frame.render_widget(
+        Paragraph::new("Enter commit · Esc cancel")
+            .style(Style::default().fg(Color::Rgb(80, 80, 100)))
+            .alignment(Alignment::Center),
+        rows[1],
+    );
+
+    // Position terminal cursor
+    let col     = char_display_width(message, cursor) as u16;
+    let max_col = rows[0].width.saturating_sub(2);
+    frame.set_cursor(rows[0].x + 1 + col.min(max_col), rows[0].y + 1);
+}
+
+fn draw_delete_confirm(frame: &mut Frame, name: &str, yes_focused: bool) {
+    let screen = frame.size();
+    let modal_rect = centered_rect(52, 9, screen);
+
+    frame.render_widget(Clear, modal_rect);
+
+    let block = Block::default()
+        .title(" Delete Project ")
+        .title_alignment(Alignment::Center)
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .style(Style::default().bg(Color::Rgb(35, 10, 10)).fg(Color::White));
+    frame.render_widget(block, modal_rect);
+
+    let inner = Rect::new(
+        modal_rect.x + 1,
+        modal_rect.y + 1,
+        modal_rect.width.saturating_sub(2),
+        modal_rect.height.saturating_sub(2),
+    );
+
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1), // padding
+            Constraint::Length(1), // message line 1
+            Constraint::Length(1), // message line 2
+            Constraint::Length(1), // padding
+            Constraint::Length(2), // buttons
+            Constraint::Min(0),
+        ])
+        .split(inner);
+
+    // Truncate long names
+    let display_name: String = name.chars().take(36).collect();
+    let ellipsis = if name.chars().count() > 36 { "…" } else { "" };
+
+    frame.render_widget(
+        Paragraph::new(format!("Delete \"{}{}\"?", display_name, ellipsis))
+            .style(Style::default().fg(Color::White))
+            .alignment(Alignment::Center),
+        rows[1],
+    );
+    frame.render_widget(
+        Paragraph::new("This cannot be undone.")
+            .style(Style::default().fg(Color::Rgb(160, 100, 100)))
+            .alignment(Alignment::Center),
+        rows[2],
+    );
+
+    // Buttons
+    let btn_chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Min(0),
+            Constraint::Length(10),
+            Constraint::Length(4),
+            Constraint::Length(10),
+            Constraint::Min(0),
+        ])
+        .split(rows[4]);
+
+    let yes_style = if yes_focused {
+        Style::default().fg(Color::Black).bg(Color::Red).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::Rgb(160, 80, 80)).bg(Color::Rgb(50, 20, 20))
+    };
+    let no_style = if !yes_focused {
+        Style::default().fg(Color::Black).bg(Color::Cyan).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::Rgb(100, 140, 160)).bg(Color::Rgb(20, 35, 45))
+    };
+
+    frame.render_widget(
+        Paragraph::new("  Yes  ").style(yes_style).alignment(Alignment::Center),
+        btn_chunks[1],
+    );
+    frame.render_widget(
+        Paragraph::new("  No  ").style(no_style).alignment(Alignment::Center),
+        btn_chunks[3],
     );
 }
 
