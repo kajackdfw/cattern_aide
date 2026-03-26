@@ -13,6 +13,7 @@ pub enum AgentKind {
     Git,
     Named(String),
     Process(String),
+    PtyProcess(String),
     HttpProxy { port: u16, target: String },
 }
 

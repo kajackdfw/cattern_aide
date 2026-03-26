@@ -25,12 +25,33 @@ impl TextContainer {
         }
     }
 
+    /// Replace all lines at once (used by PTY screen snapshots).
+    pub fn set_lines(&mut self, lines: Vec<String>) {
+        self.lines = lines;
+        if self.lines.len() > self.max_lines {
+            self.lines.drain(0..self.lines.len() - self.max_lines);
+        }
+    }
+
+    /// Replace the content of the last line in-place (used to update partial lines).
+    pub fn replace_last_line(&mut self, text: String) {
+        match self.lines.last_mut() {
+            Some(last) => *last = text,
+            None       => self.lines.push(text),
+        }
+    }
+
     pub fn scroll_up(&mut self, n: usize) {
         self.scroll_offset = self.scroll_offset.saturating_sub(n);
     }
 
     pub fn scroll_down(&mut self, n: usize) {
-        self.scroll_offset += n;
+        self.scroll_offset = self.scroll_offset.saturating_add(n);
+    }
+
+    pub fn clear(&mut self) {
+        self.lines.clear();
+        self.scroll_offset = 0;
     }
 
     /// Returns a clamped offset without mutating self.

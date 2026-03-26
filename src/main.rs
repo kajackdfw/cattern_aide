@@ -11,6 +11,7 @@ use tokio::time::{interval, MissedTickBehavior};
 
 mod agent;
 mod app;
+mod clipboard;
 mod config;
 mod events;
 mod state;
@@ -60,7 +61,10 @@ async fn main() -> Result<()> {
                 match event {
                     Ok(Event::Key(key))     => app.handle_key(key),
                     Ok(Event::Resize(_, _)) => {}
-                    Ok(Event::Mouse(_))     => {}
+                    Ok(Event::Mouse(m))     => {
+                        let size = terminal.size().unwrap_or_default();
+                        app.handle_mouse(m, size);
+                    }
                     Ok(_)                   => {}
                     Err(e)                  => tracing::error!("event error: {e}"),
                 }

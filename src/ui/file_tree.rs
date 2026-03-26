@@ -1,17 +1,17 @@
 use ratatui::{
     layout::Rect,
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState},
     Frame,
 };
-use crate::state::filetree::FileTreeState;
+use crate::{state::filetree::FileTreeState, ui::theme::Theme};
 
-pub fn draw_file_tree(frame: &mut Frame, area: Rect, state: &FileTreeState, focused: bool) {
+pub fn draw_file_tree(frame: &mut Frame, area: Rect, state: &FileTreeState, focused: bool, theme: &Theme) {
     let border_style = if focused {
-        Style::default().fg(Color::Cyan)
+        Style::default().fg(theme.border_focused)
     } else {
-        Style::default().fg(Color::Rgb(60, 60, 100))
+        Style::default().fg(theme.border)
     };
 
     let block = Block::default()
@@ -19,7 +19,7 @@ pub fn draw_file_tree(frame: &mut Frame, area: Rect, state: &FileTreeState, focu
                else       { " Files  f to focus " })
         .borders(Borders::ALL)
         .border_style(border_style)
-        .style(Style::default().bg(Color::Rgb(12, 12, 28)));
+        .style(Style::default().bg(theme.bg));
 
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -28,7 +28,7 @@ pub fn draw_file_tree(frame: &mut Frame, area: Rect, state: &FileTreeState, focu
     if n == 0 {
         frame.render_widget(
             Paragraph::new("  (empty)")
-                .style(Style::default().fg(Color::Rgb(80, 80, 100))),
+                .style(Style::default().fg(theme.text_muted)),
             inner,
         );
         return;
@@ -49,10 +49,9 @@ pub fn draw_file_tree(frame: &mut Frame, area: Rect, state: &FileTreeState, focu
             } else {
                 "  "
             };
-            // Truncate name to avoid wrapping
             let max_name = (area.width as usize)
-                .saturating_sub(2)                    // border
-                .saturating_sub(entry.depth * 2 + 2); // indent + icon
+                .saturating_sub(2)
+                .saturating_sub(entry.depth * 2 + 2);
             let name: String = entry.name.chars().take(max_name.max(1)).collect();
             let text = format!("{}{}{}", indent, icon, name);
 
@@ -60,21 +59,20 @@ pub fn draw_file_tree(frame: &mut Frame, area: Rect, state: &FileTreeState, focu
                 Line::from(Span::styled(
                     text,
                     Style::default()
-                        .fg(Color::Black)
-                        .bg(if focused { Color::Cyan } else { Color::Rgb(70, 70, 130) })
+                        .fg(theme.sel_fg)
+                        .bg(if focused { theme.sel_bg_focused } else { theme.sel_bg })
                         .add_modifier(Modifier::BOLD),
                 ))
             } else if entry.is_dir {
-                Line::from(Span::styled(text, Style::default().fg(Color::Rgb(170, 150, 255))))
+                Line::from(Span::styled(text, Style::default().fg(theme.text_accent)))
             } else {
-                Line::from(Span::styled(text, Style::default().fg(Color::Rgb(200, 200, 215))))
+                Line::from(Span::styled(text, Style::default().fg(theme.text)))
             }
         })
         .collect();
 
     frame.render_widget(Paragraph::new(lines), inner);
 
-    // Scrollbar — only when content overflows
     if n > visible {
         let mut sb = ScrollbarState::new(n.saturating_sub(visible)).position(offset);
         frame.render_stateful_widget(
@@ -87,7 +85,6 @@ pub fn draw_file_tree(frame: &mut Frame, area: Rect, state: &FileTreeState, focu
     }
 }
 
-/// Keep the selected row centred in the viewport.
 fn scroll_offset(selected: usize, visible: usize, total: usize) -> usize {
     if total <= visible { return 0; }
     let max = total - visible;

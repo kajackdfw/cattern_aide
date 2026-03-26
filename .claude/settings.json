@@ -1,0 +1,9 @@
+{
+    "permissions": {
+        "allow": [
+            "Write",
+            "Bash(bun:*)",
+            "Bash(mkdir:*)"
+        ]
+    }
+}

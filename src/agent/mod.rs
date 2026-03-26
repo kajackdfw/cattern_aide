@@ -2,6 +2,7 @@ pub mod api_agent;
 pub mod openai_api_agent;
 pub mod subprocess_agent;
 pub mod http_proxy_agent;
+pub mod pty_agent;
 
 use std::collections::HashMap;
 use tokio::sync::{mpsc, oneshot};
@@ -20,23 +21,80 @@ pub enum AgentMessage {
         text:         String,
         is_newline:   bool,
     },
+    /// Replace the last line of the tab's TextContainer in-place.
+    /// Used to update partial lines once the full line is received.
+    ReplaceLine {
+        project_name: String,
+        tab_kind:     AgentKind,
+        text:         String,
+    },
     StateChange {
         project_name: String,
         tab_kind:     AgentKind,
         new_state:    AgentState,
     },
+    ScreenUpdate {
+        project_name: String,
+        tab_kind:     AgentKind,
+        lines:        Vec<String>,
+    },
 }
 
 pub struct AgentManager {
-    tx:         mpsc::UnboundedSender<AgentMessage>,
-    rx:         mpsc::UnboundedReceiver<AgentMessage>,
-    cancellers: HashMap<(String, String), oneshot::Sender<()>>,
+    tx:                 mpsc::UnboundedSender<AgentMessage>,
+    rx:                 mpsc::UnboundedReceiver<AgentMessage>,
+    cancellers:         HashMap<(String, String), oneshot::Sender<()>>,
+    stdin_senders:      HashMap<(String, String), mpsc::UnboundedSender<String>>,
+    pty_stdin_senders:  HashMap<(String, String), mpsc::UnboundedSender<Vec<u8>>>,
 }
 
 impl AgentManager {
     pub fn new() -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
-        Self { tx, rx, cancellers: HashMap::new() }
+        Self { tx, rx, cancellers: HashMap::new(), stdin_senders: HashMap::new(), pty_stdin_senders: HashMap::new() }
+    }
+
+    /// Send a line of text to a running process's stdin.
+    pub fn send_stdin(&self, project_name: &str, tab_label: &str, text: String) {
+        let key = (project_name.to_string(), tab_label.to_string());
+        if let Some(tx) = self.stdin_senders.get(&key) {
+            tx.send(text).ok();
+        }
+    }
+
+    pub fn send_pty_stdin(&self, project_name: &str, tab_label: &str, bytes: Vec<u8>) {
+        let key = (project_name.to_string(), tab_label.to_string());
+        if let Some(tx) = self.pty_stdin_senders.get(&key) {
+            tx.send(bytes).ok();
+        }
+    }
+
+    pub fn spawn_pty_process(
+        &mut self,
+        project_name: &str,
+        project_path: &str,
+        command:      &str,
+        tab_kind:     AgentKind,
+        tab_label:    &str,
+        cols:         u16,
+        rows:         u16,
+    ) {
+        let key = (project_name.to_string(), tab_label.to_string());
+        if let Some(c) = self.cancellers.remove(&key) { let _ = c.send(()); }
+        let _ = self.pty_stdin_senders.remove(&key);
+
+        let (cancel_tx, cancel_rx)   = oneshot::channel::<()>();
+        let (stdin_tx, stdin_rx)     = mpsc::unbounded_channel::<Vec<u8>>();
+        self.cancellers.insert(key.clone(), cancel_tx);
+        self.pty_stdin_senders.insert(key, stdin_tx);
+
+        let tx    = self.tx.clone();
+        let pname = project_name.to_string();
+        let cwd   = project_path.to_string();
+        let cmd   = command.to_string();
+        tokio::spawn(pty_agent::run(
+            cmd, vec![], pname, tab_kind, cwd, cols, rows, tx, cancel_rx, stdin_rx,
+        ));
     }
 
     pub fn spawn_ai_prompt(
@@ -89,7 +147,7 @@ impl AgentManager {
                     tokio::spawn(subprocess_agent::run(
                         "claude".to_string(),
                         vec!["-p".to_string()],
-                        pname, AgentKind::AiPrompt, cwd, Some(messages), tx, cancel_rx,
+                        pname, AgentKind::AiPrompt, cwd, Some(messages), tx, cancel_rx, None,
                     ));
                 }
             }
@@ -118,7 +176,7 @@ impl AgentManager {
                     tokio::spawn(subprocess_agent::run(
                         "opencode".to_string(),
                         vec!["run".to_string(), "--print".to_string()],
-                        pname, AgentKind::AiPrompt, cwd, Some(messages), tx, cancel_rx,
+                        pname, AgentKind::AiPrompt, cwd, Some(messages), tx, cancel_rx, None,
                     ));
                 }
             }
@@ -144,20 +202,85 @@ impl AgentManager {
         tokio::spawn(subprocess_agent::run(
             "git".to_string(),
             git_args,
-            pname, AgentKind::Git, cwd, None, tx, cancel_rx,
+            pname, AgentKind::Git, cwd, None, tx, cancel_rx, None,
         ));
     }
 
-    pub fn cancel_ai_prompt(&mut self, project_name: &str) {
-        let key = (project_name.to_string(), "AI Prompt".to_string());
+    pub fn spawn_process(
+        &mut self,
+        project_name: &str,
+        project_path: &str,
+        command:      &str,
+        tab_kind:     AgentKind,
+        tab_label:    &str,
+    ) {
+        let key = (project_name.to_string(), tab_label.to_string());
+        if let Some(c) = self.cancellers.remove(&key) { let _ = c.send(()); }
+        if let Some(_) = self.stdin_senders.remove(&key) {}
+
+        let (cancel_tx, cancel_rx) = oneshot::channel::<()>();
+        let (stdin_tx, stdin_rx)   = mpsc::unbounded_channel::<String>();
+        self.cancellers.insert(key.clone(), cancel_tx);
+        self.stdin_senders.insert(key, stdin_tx);
+
+        let tx    = self.tx.clone();
+        let pname = project_name.to_string();
+        let cwd   = project_path.to_string();
+        let cmd   = command.to_string();
+        tokio::spawn(subprocess_agent::run(
+            "sh".to_string(), vec!["-c".to_string(), cmd],
+            pname, tab_kind, cwd, None, tx, cancel_rx, Some(stdin_rx),
+        ));
+    }
+
+    pub fn spawn_http_proxy(
+        &mut self,
+        project_name: &str,
+        port:         u16,
+        target:       String,
+        tab_kind:     AgentKind,
+        tab_label:    &str,
+    ) {
+        let key = (project_name.to_string(), tab_label.to_string());
+        if let Some(c) = self.cancellers.remove(&key) { let _ = c.send(()); }
+        let (cancel_tx, cancel_rx) = oneshot::channel::<()>();
+        self.cancellers.insert(key, cancel_tx);
+
+        let tx    = self.tx.clone();
+        let pname = project_name.to_string();
+        tokio::spawn(http_proxy_agent::run(pname, port, target, tab_kind, tx, cancel_rx));
+    }
+
+    pub fn cancel_tab(&mut self, project_name: &str, tab_label: &str) {
+        let key = (project_name.to_string(), tab_label.to_string());
         if let Some(cancel) = self.cancellers.remove(&key) {
             let _ = cancel.send(());
         }
     }
 
+    pub fn cancel_ai_prompt(&mut self, project_name: &str) {
+        self.cancel_tab(project_name, "AI Prompt");
+    }
+
     pub fn drain_into(&mut self, projects: &mut Vec<Project>) {
         while let Ok(msg) = self.rx.try_recv() {
             match msg {
+                AgentMessage::ScreenUpdate { project_name, tab_kind, lines } => {
+                    if let Some(p) = projects.iter_mut().find(|p| p.name == project_name) {
+                        if let Some(tab) = p.tabs.iter_mut().find(|t| t.kind == tab_kind) {
+                            tab.content.set_lines(lines);
+                            // Auto-scroll to bottom
+                            tab.content.scroll_offset = usize::MAX;
+                        }
+                    }
+                }
+                AgentMessage::ReplaceLine { project_name, tab_kind, text } => {
+                    if let Some(p) = projects.iter_mut().find(|p| p.name == project_name) {
+                        if let Some(tab) = p.tabs.iter_mut().find(|t| t.kind == tab_kind) {
+                            tab.content.replace_last_line(text);
+                        }
+                    }
+                }
                 AgentMessage::Chunk { project_name, tab_kind, text, is_newline } => {
                     if let Some(p) = projects.iter_mut().find(|p| p.name == project_name) {
                         if let Some(tab) = p.tabs.iter_mut().find(|t| t.kind == tab_kind) {

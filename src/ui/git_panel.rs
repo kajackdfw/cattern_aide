@@ -5,24 +5,23 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState},
     Frame,
 };
-use crate::state::git::{FileStatusCode, GitStatus};
+use crate::{state::git::{FileStatusCode, GitStatus}, ui::theme::Theme};
 
-pub fn draw_git_panel(frame: &mut Frame, area: Rect, status: &GitStatus, focused: bool) {
-    // Split: file list (top, flexible) + action menu (bottom, fixed 5 rows)
+pub fn draw_git_panel(frame: &mut Frame, area: Rect, status: &GitStatus, focused: bool, theme: &Theme) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(0), Constraint::Length(5)])
         .split(area);
 
-    draw_status_list(frame, chunks[0], status, focused);
-    draw_action_menu(frame, chunks[1], focused);
+    draw_status_list(frame, chunks[0], status, focused, theme);
+    draw_action_menu(frame, chunks[1], focused, theme);
 }
 
-fn draw_status_list(frame: &mut Frame, area: Rect, status: &GitStatus, focused: bool) {
+fn draw_status_list(frame: &mut Frame, area: Rect, status: &GitStatus, focused: bool, theme: &Theme) {
     let border_style = if focused {
-        Style::default().fg(Color::Cyan)
+        Style::default().fg(theme.border_focused)
     } else {
-        Style::default().fg(Color::Rgb(60, 60, 100))
+        Style::default().fg(theme.border)
     };
 
     let branch_str = if status.is_git_repo && !status.branch.is_empty() {
@@ -38,7 +37,7 @@ fn draw_status_list(frame: &mut Frame, area: Rect, status: &GitStatus, focused: 
         .title_bottom(hint)
         .borders(Borders::LEFT | Borders::RIGHT | Borders::TOP)
         .border_style(border_style)
-        .style(Style::default().bg(Color::Rgb(10, 10, 22)));
+        .style(Style::default().bg(theme.bg_alt));
 
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -46,7 +45,7 @@ fn draw_status_list(frame: &mut Frame, area: Rect, status: &GitStatus, focused: 
     if !status.is_git_repo {
         frame.render_widget(
             Paragraph::new("  (not a git repo)")
-                .style(Style::default().fg(Color::Rgb(80, 80, 100))),
+                .style(Style::default().fg(theme.text_muted)),
             inner,
         );
         return;
@@ -80,7 +79,7 @@ fn draw_status_list(frame: &mut Frame, area: Rect, status: &GitStatus, focused: 
             if abs == status.selected && focused {
                 Line::from(Span::styled(
                     text,
-                    Style::default().fg(Color::Black).bg(Color::Cyan).add_modifier(Modifier::BOLD),
+                    Style::default().fg(theme.sel_fg).bg(theme.sel_bg_focused).add_modifier(Modifier::BOLD),
                 ))
             } else {
                 Line::from(Span::styled(text, Style::default().fg(fg)))
@@ -102,37 +101,37 @@ fn draw_status_list(frame: &mut Frame, area: Rect, status: &GitStatus, focused: 
     }
 }
 
-fn draw_action_menu(frame: &mut Frame, area: Rect, focused: bool) {
+fn draw_action_menu(frame: &mut Frame, area: Rect, focused: bool, theme: &Theme) {
     let border_style = if focused {
-        Style::default().fg(Color::Cyan)
+        Style::default().fg(theme.border_focused)
     } else {
-        Style::default().fg(Color::Rgb(60, 60, 100))
+        Style::default().fg(theme.border)
     };
 
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(border_style)
-        .style(Style::default().bg(Color::Rgb(10, 10, 22)));
+        .style(Style::default().bg(theme.bg_alt));
 
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
     let key = |k: &'static str| Span::styled(k, if focused {
-        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+        Style::default().fg(theme.border_focused).add_modifier(Modifier::BOLD)
     } else {
-        Style::default().fg(Color::Rgb(70, 70, 100))
+        Style::default().fg(theme.text_muted)
     });
     let act = |a: &'static str| Span::styled(a, if focused {
-        Style::default().fg(Color::White)
+        Style::default().fg(theme.text)
     } else {
-        Style::default().fg(Color::Rgb(90, 90, 115))
+        Style::default().fg(theme.text_dim)
     });
-    let dot = || Span::styled(" · ", Style::default().fg(Color::Rgb(50, 50, 70)));
+    let dot = || Span::styled(" · ", Style::default().fg(theme.border));
 
     let lines = vec![
         Line::from(vec![key("s"), act(" stage"), dot(), key("u"), act(" unstage"), dot(), key("c"), act(" commit")]),
         Line::from(vec![key("p"), act(" pull"),  dot(), key("P"), act(" push"),    dot(), key("f"), act(" fetch")]),
-        Line::from(vec![key("x"), act(" discard all"), dot(), key("r"), act(" reload")]),
+        Line::from(vec![key("x"), act(" discard"), dot(), key("r"), act(" reload"), dot(), key("↵"), act(" diff")]),
     ];
 
     frame.render_widget(Paragraph::new(lines), inner);
