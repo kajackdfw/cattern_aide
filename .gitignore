@@ -1,4 +1,4 @@
 /target
 /logs
-/target/debug
+/target
 config.toml
