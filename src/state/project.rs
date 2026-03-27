@@ -2,6 +2,7 @@ use super::agent::{AgentKind, AgentState, Provider};
 use super::container::TextContainer;
 use super::filetree::FileTreeState;
 use super::git::GitStatus;
+use super::pty_screen::PtyScreen;
 
 /// A single tab in the right-column viewer.
 pub struct TargetTab {
@@ -17,21 +18,23 @@ pub struct ConversationMessage {
 }
 
 pub struct HorizontalTab {
-    pub kind:    AgentKind,
-    pub state:   AgentState,
-    pub content: TextContainer,
-    pub label:   String,
-    pub command: Option<String>,  // for Process tabs
+    pub kind:       AgentKind,
+    pub state:      AgentState,
+    pub content:    TextContainer,
+    pub label:      String,
+    pub command:    Option<String>,  // for Process tabs
+    pub pty_screen: PtyScreen,      // live screen grid for PTY tabs
 }
 
 impl HorizontalTab {
     pub fn new(kind: AgentKind, label: impl Into<String>) -> Self {
         Self {
             kind,
-            state:   AgentState::Idle,
-            content: TextContainer::new(),
-            label:   label.into(),
-            command: None,
+            state:      AgentState::Idle,
+            content:    TextContainer::new(),
+            label:      label.into(),
+            command:    None,
+            pty_screen: Vec::new(),
         }
     }
 

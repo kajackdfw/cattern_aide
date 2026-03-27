@@ -11,6 +11,7 @@ use crate::{
     state::{
         agent::{AgentKind, AgentState, Provider},
         project::{ConversationMessage, Project},
+        pty_screen::PtyScreen,
     },
 };
 
@@ -36,22 +37,30 @@ pub enum AgentMessage {
     ScreenUpdate {
         project_name: String,
         tab_kind:     AgentKind,
-        lines:        Vec<String>,
+        screen:       PtyScreen,
     },
 }
 
 pub struct AgentManager {
-    tx:                 mpsc::UnboundedSender<AgentMessage>,
-    rx:                 mpsc::UnboundedReceiver<AgentMessage>,
-    cancellers:         HashMap<(String, String), oneshot::Sender<()>>,
-    stdin_senders:      HashMap<(String, String), mpsc::UnboundedSender<String>>,
-    pty_stdin_senders:  HashMap<(String, String), mpsc::UnboundedSender<Vec<u8>>>,
+    tx:                  mpsc::UnboundedSender<AgentMessage>,
+    rx:                  mpsc::UnboundedReceiver<AgentMessage>,
+    cancellers:          HashMap<(String, String), oneshot::Sender<()>>,
+    stdin_senders:       HashMap<(String, String), mpsc::UnboundedSender<String>>,
+    pty_stdin_senders:   HashMap<(String, String), mpsc::UnboundedSender<Vec<u8>>>,
+    pty_resize_senders:  HashMap<(String, String), mpsc::UnboundedSender<(u16, u16)>>,
 }
 
 impl AgentManager {
     pub fn new() -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
-        Self { tx, rx, cancellers: HashMap::new(), stdin_senders: HashMap::new(), pty_stdin_senders: HashMap::new() }
+        Self { tx, rx, cancellers: HashMap::new(), stdin_senders: HashMap::new(), pty_stdin_senders: HashMap::new(), pty_resize_senders: HashMap::new() }
+    }
+
+    pub fn resize_pty(&self, project_name: &str, tab_label: &str, cols: u16, rows: u16) {
+        let key = (project_name.to_string(), tab_label.to_string());
+        if let Some(tx) = self.pty_resize_senders.get(&key) {
+            tx.send((cols, rows)).ok();
+        }
     }
 
     /// Send a line of text to a running process's stdin.
@@ -82,18 +91,21 @@ impl AgentManager {
         let key = (project_name.to_string(), tab_label.to_string());
         if let Some(c) = self.cancellers.remove(&key) { let _ = c.send(()); }
         let _ = self.pty_stdin_senders.remove(&key);
+        let _ = self.pty_resize_senders.remove(&key);
 
         let (cancel_tx, cancel_rx)   = oneshot::channel::<()>();
         let (stdin_tx, stdin_rx)     = mpsc::unbounded_channel::<Vec<u8>>();
+        let (resize_tx, resize_rx)   = mpsc::unbounded_channel::<(u16, u16)>();
         self.cancellers.insert(key.clone(), cancel_tx);
-        self.pty_stdin_senders.insert(key, stdin_tx);
+        self.pty_stdin_senders.insert(key.clone(), stdin_tx);
+        self.pty_resize_senders.insert(key, resize_tx);
 
         let tx    = self.tx.clone();
         let pname = project_name.to_string();
         let cwd   = project_path.to_string();
         let cmd   = command.to_string();
         tokio::spawn(pty_agent::run(
-            cmd, vec![], pname, tab_kind, cwd, cols, rows, tx, cancel_rx, stdin_rx,
+            "sh".to_string(), vec!["-c".to_string(), cmd], pname, tab_kind, cwd, cols, rows, tx, cancel_rx, stdin_rx, resize_rx,
         ));
     }
 
@@ -265,12 +277,10 @@ impl AgentManager {
     pub fn drain_into(&mut self, projects: &mut Vec<Project>) {
         while let Ok(msg) = self.rx.try_recv() {
             match msg {
-                AgentMessage::ScreenUpdate { project_name, tab_kind, lines } => {
+                AgentMessage::ScreenUpdate { project_name, tab_kind, screen } => {
                     if let Some(p) = projects.iter_mut().find(|p| p.name == project_name) {
                         if let Some(tab) = p.tabs.iter_mut().find(|t| t.kind == tab_kind) {
-                            tab.content.set_lines(lines);
-                            // Auto-scroll to bottom
-                            tab.content.scroll_offset = usize::MAX;
+                            tab.pty_screen = screen;
                         }
                     }
                 }

@@ -226,6 +226,8 @@ pub struct App {
     pub should_quit:            bool,
     /// Set when text is copied; cleared after ~1.5 s in drain_agents tick.
     pub copy_flash:             Option<std::time::Instant>,
+    /// Most recently known terminal size; updated each draw frame and on resize events.
+    pub terminal_size:          Rect,
 }
 
 impl App {
@@ -285,6 +287,7 @@ impl App {
             target_code_focused:    false,
             should_quit:            false,
             copy_flash:             None,
+            terminal_size:          Rect::default(),
         };
         app.spawn_initial_agents();
         app
@@ -321,6 +324,23 @@ impl App {
             if t.elapsed() > std::time::Duration::from_millis(1500) {
                 self.copy_flash = None;
             }
+        }
+    }
+
+    pub fn handle_resize(&mut self, cols: u16, rows: u16) {
+        self.terminal_size = Rect { x: 0, y: 0, width: cols, height: rows };
+        let pty_cols = cols.saturating_sub(6).max(80);
+        let pty_rows = rows.max(24);
+        // Notify all running PTY tabs of the new dimensions
+        let ptys: Vec<(String, String)> = self.projects.iter()
+            .flat_map(|p| p.tabs.iter().filter_map(|t| {
+                if matches!(t.kind, AgentKind::PtyProcess(_)) && t.state == AgentState::Running {
+                    Some((p.name.clone(), t.label.clone()))
+                } else { None }
+            }))
+            .collect();
+        for (name, label) in ptys {
+            self.agent_manager.resize_pty(&name, &label, pty_cols, pty_rows);
         }
     }
 
@@ -702,12 +722,13 @@ impl App {
                     })
                 });
                 if let Some((name, label)) = pty_info {
+                    // Only auto-focus on printable chars — navigation keys (arrows, h/l/j/k)
+                    // fall through so tab/project switching still works when not focused.
                     let bytes: Option<Vec<u8>> = match key.code {
                         KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
                             let mut buf = [0u8; 4];
                             Some(c.encode_utf8(&mut buf).as_bytes().to_vec())
                         }
-                        KeyCode::Enter => Some(b"\r".to_vec()),
                         _ => None,
                     };
                     if let Some(b) = bytes {
@@ -1289,7 +1310,9 @@ impl App {
             }
             AgentKind::PtyProcess(_) => {
                 if let Some(cmd) = cmd {
-                    self.agent_manager.spawn_pty_process(&pname, &ppath, &cmd, AgentKind::PtyProcess(label.clone()), &label, 200, 50);
+                    let cols = self.terminal_size.width.saturating_sub(6).max(80);
+                    let rows = self.terminal_size.height.max(24);
+                    self.agent_manager.spawn_pty_process(&pname, &ppath, &cmd, AgentKind::PtyProcess(label.clone()), &label, cols, rows);
                 }
             }
             _ => {}

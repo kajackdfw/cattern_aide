@@ -43,7 +43,19 @@ pub fn draw_main(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     draw_file_tree(frame, left[0], &project.file_tree, app.file_tree_focused, theme);
     draw_git_panel(frame, left[1], &project.git_status, app.git_focused, theme);
 
-    // ── Middle column: tabs bar + active tab content ─────────────────────────
+    // ── PTY active: full-screen (entire main area) ──────────────────────────
+    let is_pty_active = project.tabs.get(project.active_tab)
+        .map(|t| matches!(t.kind, AgentKind::PtyProcess(_)))
+        .unwrap_or(false);
+
+    if is_pty_active {
+        if let Some(tab) = project.tabs.get(project.active_tab) {
+            frame.render_widget(TabContentWidget { tab, theme, pty_focused: app.prompt_focused }, area);
+        }
+        return;
+    }
+
+    // ── Normal layout: middle column tabs bar + active tab content ───────────
     let mid = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(3), Constraint::Min(0)])
@@ -73,12 +85,8 @@ pub fn draw_main(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
         let is_ai      = tab.kind == AgentKind::AiPrompt;
         let is_running_process = matches!(tab.kind, AgentKind::Process(_))
             && tab.state == AgentState::Running;
-        let is_pty     = matches!(tab.kind, AgentKind::PtyProcess(_));
 
-        if is_pty {
-            // PTY tabs: no input box — keys go directly to the subprocess
-            frame.render_widget(TabContentWidget { tab, theme, pty_focused: app.prompt_focused }, mid[1]);
-        } else if is_ai || is_running_process {
+        if is_ai || is_running_process {
             let content_split = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([Constraint::Length(5), Constraint::Min(0)])

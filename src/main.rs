@@ -49,7 +49,8 @@ async fn main() -> Result<()> {
 
     loop {
         app.drain_agents();
-        terminal.draw(|f| ui::draw(f, &app))?;
+        let frame_size = terminal.draw(|f| ui::draw(f, &app))?.area;
+        app.terminal_size = frame_size;
 
         if app.should_quit {
             break;
@@ -59,14 +60,14 @@ async fn main() -> Result<()> {
             _ = tick_interval.tick() => {}
             Some(event) = events.next() => {
                 match event {
-                    Ok(Event::Key(key))     => app.handle_key(key),
-                    Ok(Event::Resize(_, _)) => {}
-                    Ok(Event::Mouse(m))     => {
+                    Ok(Event::Key(key))          => app.handle_key(key),
+                    Ok(Event::Resize(cols, rows)) => app.handle_resize(cols, rows),
+                    Ok(Event::Mouse(m))           => {
                         let size = terminal.size().unwrap_or_default();
                         app.handle_mouse(m, size);
                     }
-                    Ok(_)                   => {}
-                    Err(e)                  => tracing::error!("event error: {e}"),
+                    Ok(_)  => {}
+                    Err(e) => tracing::error!("event error: {e}"),
                 }
             }
         }

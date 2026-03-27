@@ -1,134 +1,32 @@
 use std::io::{Read, Write};
 use tokio::sync::{mpsc, oneshot};
-use vte::{Parser, Perform, Params};
 use crate::state::agent::{AgentKind, AgentState};
+use crate::state::pty_screen::{PtyCell, PtyColor, PtyScreen};
 use super::AgentMessage;
 
-// ── Minimal VT screen emulator ──────────────────────────────────────────────
-
-struct Screen {
-    cols:       usize,
-    rows:       usize,
-    cells:      Vec<Vec<char>>,
-    cursor_row: usize,
-    cursor_col: usize,
-}
-
-impl Screen {
-    fn new(cols: usize, rows: usize) -> Self {
-        Self {
-            cols, rows,
-            cells: vec![vec![' '; cols]; rows],
-            cursor_row: 0,
-            cursor_col: 0,
-        }
-    }
-
-    fn newline(&mut self) {
-        if self.cursor_row + 1 < self.rows {
-            self.cursor_row += 1;
-        } else {
-            self.cells.remove(0);
-            self.cells.push(vec![' '; self.cols]);
-        }
-    }
-
-    fn to_lines(&self) -> Vec<String> {
-        let mut lines: Vec<String> = self.cells
-            .iter()
-            .map(|row| row.iter().collect::<String>().trim_end().to_string())
-            .collect();
-        // Trim trailing blank lines
-        while lines.last().map(|l: &String| l.is_empty()).unwrap_or(false) {
-            lines.pop();
-        }
-        lines
+fn vt100_color(c: vt100::Color) -> PtyColor {
+    match c {
+        vt100::Color::Default      => PtyColor::Default,
+        vt100::Color::Idx(n)       => PtyColor::Indexed(n),
+        vt100::Color::Rgb(r, g, b) => PtyColor::Rgb(r, g, b),
     }
 }
 
-impl Perform for Screen {
-    fn print(&mut self, c: char) {
-        if self.cursor_row < self.rows && self.cursor_col < self.cols {
-            self.cells[self.cursor_row][self.cursor_col] = c;
-            self.cursor_col += 1;
-        }
-        if self.cursor_col >= self.cols {
-            self.cursor_col = 0;
-            self.newline();
-        }
-    }
-
-    fn execute(&mut self, byte: u8) {
-        match byte {
-            0x0D => { self.cursor_col = 0; }
-            0x0A => { self.newline(); }
-            0x08 => { if self.cursor_col > 0 { self.cursor_col -= 1; } }
-            _ => {}
-        }
-    }
-
-    fn csi_dispatch(&mut self, params: &Params, _intermediates: &[u8], _ignore: bool, action: char) {
-        let ps: Vec<u16> = params.iter()
-            .map(|p| p.first().copied().unwrap_or(0))
-            .collect();
-        let p0 = ps.first().copied().unwrap_or(0);
-        let p1 = ps.get(1).copied().unwrap_or(0);
-
-        match action {
-            'H' | 'f' => {
-                let r = (p0.saturating_sub(1) as usize).min(self.rows.saturating_sub(1));
-                let c = (p1.saturating_sub(1) as usize).min(self.cols.saturating_sub(1));
-                self.cursor_row = r;
-                self.cursor_col = c;
-            }
-            'A' => { self.cursor_row = self.cursor_row.saturating_sub(p0.max(1) as usize); }
-            'B' => { self.cursor_row = (self.cursor_row + p0.max(1) as usize).min(self.rows.saturating_sub(1)); }
-            'C' => { self.cursor_col = (self.cursor_col + p0.max(1) as usize).min(self.cols.saturating_sub(1)); }
-            'D' => { self.cursor_col = self.cursor_col.saturating_sub(p0.max(1) as usize); }
-            'G' => { self.cursor_col = (p0.saturating_sub(1) as usize).min(self.cols.saturating_sub(1)); }
-            'J' => match p0 {
-                0 => {
-                    for c in self.cursor_col..self.cols { self.cells[self.cursor_row][c] = ' '; }
-                    for r in (self.cursor_row + 1)..self.rows {
-                        for c in 0..self.cols { self.cells[r][c] = ' '; }
-                    }
-                }
-                1 => {
-                    for r in 0..self.cursor_row {
-                        for c in 0..self.cols { self.cells[r][c] = ' '; }
-                    }
-                    for c in 0..=self.cursor_col.min(self.cols.saturating_sub(1)) {
-                        self.cells[self.cursor_row][c] = ' ';
-                    }
-                }
-                2 | 3 => {
-                    for r in 0..self.rows { for c in 0..self.cols { self.cells[r][c] = ' '; } }
-                    self.cursor_row = 0; self.cursor_col = 0;
-                }
-                _ => {}
-            }
-            'K' => match p0 {
-                0 => { for c in self.cursor_col..self.cols { self.cells[self.cursor_row][c] = ' '; } }
-                1 => { for c in 0..=self.cursor_col.min(self.cols.saturating_sub(1)) { self.cells[self.cursor_row][c] = ' '; } }
-                2 => { for c in 0..self.cols { self.cells[self.cursor_row][c] = ' '; } }
-                _ => {}
-            }
-            'd' => { self.cursor_row = (p0.saturating_sub(1) as usize).min(self.rows.saturating_sub(1)); }
-            _ => {} // Ignore SGR (m), cursor save/restore, etc.
-        }
-    }
-
-    fn hook(&mut self, _: &Params, _: &[u8], _: bool, _: char) {}
-    fn put(&mut self, _: u8) {}
-    fn unhook(&mut self) {}
-    fn osc_dispatch(&mut self, _: &[&[u8]], _: bool) {}
-    fn esc_dispatch(&mut self, _: &[u8], _: bool, byte: u8) {
-        match byte {
-            b'7' => {} // Save cursor - ignore
-            b'8' => {} // Restore cursor - ignore
-            _ => {}
-        }
-    }
+fn screen_to_pty(screen: &vt100::Screen) -> PtyScreen {
+    let (rows, cols) = screen.size();
+    (0..rows).map(|r| {
+        (0..cols).map(|c| {
+            let cell = screen.cell(r, c);
+            let contents = cell.map(|c| c.contents().to_string()).unwrap_or_default();
+            let fg  = cell.map(|c| vt100_color(c.fgcolor())).unwrap_or(PtyColor::Default);
+            let bg  = cell.map(|c| vt100_color(c.bgcolor())).unwrap_or(PtyColor::Default);
+            let bold      = cell.map(|c| c.bold()).unwrap_or(false);
+            let italic    = cell.map(|c| c.italic()).unwrap_or(false);
+            let underline = cell.map(|c| c.underline()).unwrap_or(false);
+            let reversed  = cell.map(|c| c.inverse()).unwrap_or(false);
+            PtyCell { ch: contents, fg, bg, bold, italic, underline, reversed }
+        }).collect()
+    }).collect()
 }
 
 // ── PTY agent ───────────────────────────────────────────────────────────────
@@ -144,6 +42,7 @@ pub async fn run(
     tx:           mpsc::UnboundedSender<AgentMessage>,
     cancel_rx:    oneshot::Receiver<()>,
     stdin_rx:     mpsc::UnboundedReceiver<Vec<u8>>,
+    resize_rx:    mpsc::UnboundedReceiver<(u16, u16)>,
 ) {
     use portable_pty::{CommandBuilder, NativePtySystem, PtySize, PtySystem};
 
@@ -224,9 +123,9 @@ pub async fn run(
     });
 
     // Main async loop: parse PTY output and send screen snapshots
-    let mut screen = Screen::new(cols as usize, rows as usize);
-    let mut parser = Parser::new();
+    let mut parser = vt100::Parser::new(rows, cols, 0);
     let mut cancel_rx = std::pin::pin!(cancel_rx);
+    let mut resize_rx = resize_rx;
 
     loop {
         tokio::select! {
@@ -236,17 +135,24 @@ pub async fn run(
                 tx.send(state_msg(AgentState::Idle)).ok();
                 return;
             }
+            resize = resize_rx.recv() => {
+                if let Some((new_cols, new_rows)) = resize {
+                    let _ = pair.master.resize(PtySize {
+                        rows: new_rows, cols: new_cols,
+                        pixel_width: 0, pixel_height: 0,
+                    });
+                    parser.set_size(new_rows, new_cols);
+                }
+            }
             bytes_opt = pty_rx.recv() => {
                 match bytes_opt {
                     None => break,
                     Some(bytes) => {
-                        for &b in &bytes {
-                            parser.advance(&mut screen, b);
-                        }
+                        parser.process(&bytes);
                         tx.send(AgentMessage::ScreenUpdate {
                             project_name: project_name.clone(),
                             tab_kind: tab_kind.clone(),
-                            lines: screen.to_lines(),
+                            screen: screen_to_pty(parser.screen()),
                         }).ok();
                     }
                 }
